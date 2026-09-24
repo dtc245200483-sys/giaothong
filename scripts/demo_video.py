@@ -312,9 +312,9 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
 
                     # Plate text formatting
                     if tinfo['plate'] is not None:
-                        plate_str = f"Bien so (Conf {tinfo['plate']['conf']:.2f})"
+                        plate_str = f"Bien: {tinfo['plate']['conf']:.2f}"
                     else:
-                        plate_str = "Nguoc chieu / K.Bien"
+                        plate_str = "Chua thay bien sau"
 
                     snap_name = f"violation_{total_violations:03d}_{tid}_{frame_idx}.jpg"
                     snap_path = os.path.join(snap_dir, snap_name)
@@ -423,20 +423,20 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
 
             # Table Header
             cv2.rectangle(frame, (tbl_x, tbl_y), (tbl_x + tbl_w, tbl_y + 28), (0, 0, 180), -1)
-            cv2.putText(frame, "BANG GHI NHAT KY VI PHAM (CUMULATIVE +1)", (tbl_x + 12, tbl_y + 20),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.48, (255, 255, 255), 1)
+            cv2.putText(frame, "DANH SACH VI PHAM: KHONG DOI MU BAO HIEM", (tbl_x + 10, tbl_y + 20),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.44, (255, 255, 255), 1)
 
             if not violation_registry:
                 cv2.putText(frame, "Chua phat hien vi pham nao tren tuyen duong.", (tbl_x + 15, tbl_y + 55),
                             cv2.FONT_HERSHEY_DUPLEX, 0.42, (160, 160, 160), 1)
             else:
-                # Show last 5 violations
+                # Show last 6 violations
                 display_recs = violation_registry[-6:]
                 row_y = tbl_y + 52
                 for r in display_recs:
-                    row_str = f"#{r['stt']:02d} | {r['time']:>6s} | {r['track_id']:<6s} | {r['plate']:<18s} | {r['conf']}"
-                    cv2.putText(frame, row_str, (tbl_x + 10, row_y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 220, 255), 1)
+                    row_str = f"#{r['stt']:02d} | {r['time']:>5s} | {r['track_id']:<5s} | {r['plate']:<16s} | KHONG MU"
+                    cv2.putText(frame, row_str, (tbl_x + 8, row_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 255), 1)
                     row_y += 28
 
             # 7. Picture-in-Picture (PiP Zoom at Bottom-Right)
