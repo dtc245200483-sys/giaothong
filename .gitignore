@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.cache
+*.log
+repos/
+runs/*.mp4
+runs/train_video_v4/weights/last.pt
+video/hanoi_bach_mai_traffic.mp4
