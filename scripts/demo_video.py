@@ -235,9 +235,9 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
                     detected_people.append({"box": bx, "conf": c})
 
             # Custom model: Helmet (1), No_Helmet (2), License_Plate (3), Moto (0)
-            r_custom = custom_model.predict(frame, conf=0.18, imgsz=imgsz, verbose=False)[0]
+            r_custom = custom_model.predict(frame, conf=0.15, imgsz=imgsz, verbose=False)[0]
             detected_helmets = []
-            detected_no_helmets = []
+            detected_no_helmets_raw = []
             detected_plates = []
             for b in r_custom.boxes:
                 cls_id = int(b.cls[0])
@@ -245,10 +245,11 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
                 bx = [int(v) for v in b.xyxy[0]]
                 if cls_id == 0: # custom moto
                     detected_bikes_raw.append({"box": bx, "conf": c, "time": curr_sec})
-                elif cls_id == 1: # helmet
+                elif cls_id == 1: # helmet (keep at low conf 0.15 for maximum protection of riders)
                     detected_helmets.append({"box": bx, "conf": c})
                 elif cls_id == 2: # no_helmet
-                    detected_no_helmets.append({"box": bx, "conf": c})
+                    if c >= 0.40: # Strict threshold to eliminate false positives on dark helmets, caps, hair
+                        detected_no_helmets_raw.append({"box": bx, "conf": c})
                 elif cls_id == 3: # license_plate
                     detected_plates.append({"box": bx, "conf": c})
 
@@ -264,9 +265,10 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
             # 2. Update Tracker for Motorcycles
             active_tracks = tracker.update(detected_bikes)
 
-            # 3. Associate License Plate & Violation to Tracked Bikes
+            # 3. Person-Centric Rider Verification & Helmet Priority Association
             latest_plate_crop = None
             latest_violation_crop = None
+            verified_no_helmets = []
 
             for tid, tinfo in active_tracks.items():
                 if tinfo['lost'] > 0:
@@ -274,16 +276,15 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
                 bx1, by1, bx2, by2 = tinfo['box']
                 bw, bh = bx2 - bx1, by2 - by1
 
-                # Extended search region around motorcycle for rider & plate
+                # Extended search region around motorcycle for license plate
                 ex1 = max(0, int(bx1 - 0.15 * bw))
-                ey1 = max(0, int(by1 - 0.35 * bh)) # Look higher for rider head
+                ey1 = max(0, int(by1 - 0.35 * bh))
                 ex2 = min(render_w, int(bx2 + 0.15 * bw))
                 ey2 = min(render_h, int(by2 + 0.15 * bh))
 
                 # Find license plate on this motorcycle
                 for p in detected_plates:
                     px1, py1, px2, py2 = p["box"]
-                    # Center of plate inside bike search region
                     pcx, pcy = (px1 + px2) // 2, (py1 + py2) // 2
                     if ex1 <= pcx <= ex2 and ey1 <= pcy <= ey2:
                         tinfo['plate'] = p
@@ -292,21 +293,80 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
                             if pw > 6 and ph > 6:
                                 latest_plate_crop = frame[max(0, py1-5):min(render_h, py2+5), max(0, px1-5):min(render_w, px2+5)]
 
-                # Check violations (no_helmet) on this motorcycle
+                # Identify human rider(s) riding this motorcycle
+                bike_riders = []
+                for p in detected_people:
+                    px1, py1, px2, py2 = p["box"]
+                    # Person must overlap significantly with the bike
+                    if not (px2 < bx1 or px1 > bx2 or py2 < by1 or py1 > by2):
+                        bike_riders.append(p)
+
                 bike_has_violation = False
                 viol_conf = 0.0
                 viol_box = None
 
-                for nh in detected_no_helmets:
-                    nx1, ny1, nx2, ny2 = nh["box"]
-                    ncx, ncy = (nx1 + nx2) // 2, (ny1 + ny2) // 2
-                    if ex1 <= ncx <= ex2 and ey1 <= ncy <= ey2:
-                        bike_has_violation = True
-                        viol_conf = max(viol_conf, nh["conf"])
-                        viol_box = nh["box"]
+                if bike_riders:
+                    # Evaluate each rider on this bike individually
+                    for rider in bike_riders:
+                        rpx1, rpy1, rpx2, rpy2 = rider["box"]
+                        rpw, rph = rpx2 - rpx1, rpy2 - rpy1
+                        # Head region: top 35% of person bounding box
+                        rhx1, rhy1, rhx2, rhy2 = rpx1, rpy1, rpx2, rpy1 + int(0.35 * rph)
 
-                # If this bike violated and HAS NOT BEEN RECORDED YET -> +1 VIOLATION!
-                if bike_has_violation and not tinfo['violated']:
+                        # RULE: HELMET PRIORITY (Mũ bảo hiểm luôn được ưu tiên bảo vệ người lái)
+                        rider_has_helmet = False
+                        for h in detected_helmets:
+                            hx1, hy1, hx2, hy2 = h["box"]
+                            hcx, hcy = (hx1 + hx2) // 2, (hy1 + hy2) // 2
+                            # If helmet center is inside rider head or overlaps significantly
+                            if (rhx1 <= hcx <= rhx2 and rhy1 <= hcy <= rhy2) or (hx1 < rhx2 and hx2 > rhx1 and hy1 < rhy2 and hy2 > rhy1):
+                                rider_has_helmet = True
+                                break
+
+                        if rider_has_helmet:
+                            continue # Rider is verified wearing helmet, suppress any violation!
+
+                        # If no helmet on this head, check if it matches a high-confidence no_helmet detection
+                        for nh in detected_no_helmets_raw:
+                            nx1, ny1, nx2, ny2 = nh["box"]
+                            ncx, ncy = (nx1 + nx2) // 2, (ny1 + ny2) // 2
+                            if (rhx1 <= ncx <= rhx2 and rhy1 <= ncy <= rhy2) or box_iou([rhx1, rhy1, rhx2, rhy2], nh["box"]) > 0.15:
+                                bike_has_violation = True
+                                viol_conf = max(viol_conf, nh["conf"])
+                                viol_box = nh["box"]
+                                verified_no_helmets.append(nh)
+                                break
+                else:
+                    # Fallback when COCO person is missed (distant bikes): inspect top region of bike
+                    fhx1, fhy1, fhx2, fhy2 = bx1, max(0, by1 - int(0.25 * bh)), bx2, by1 + int(0.15 * bh)
+                    fallback_has_helmet = False
+                    for h in detected_helmets:
+                        hx1, hy1, hx2, hy2 = h["box"]
+                        hcx, hcy = (hx1 + hx2) // 2, (hy1 + hy2) // 2
+                        if fhx1 <= hcx <= fhx2 and fhy1 <= hcy <= fhy2:
+                            fallback_has_helmet = True
+                            break
+
+                    if not fallback_has_helmet:
+                        for nh in detected_no_helmets_raw:
+                            if nh["conf"] >= 0.45: # Higher threshold for fallback
+                                nx1, ny1, nx2, ny2 = nh["box"]
+                                ncx, ncy = (nx1 + nx2) // 2, (ny1 + ny2) // 2
+                                if fhx1 <= ncx <= fhx2 and fhy1 <= ncy <= fhy2:
+                                    bike_has_violation = True
+                                    viol_conf = max(viol_conf, nh["conf"])
+                                    viol_box = nh["box"]
+                                    verified_no_helmets.append(nh)
+                                    break
+
+                # Temporal Consistency: accumulate violation frames
+                if bike_has_violation:
+                    tinfo['viol_frames'] = tinfo.get('viol_frames', 0) + 1
+                else:
+                    tinfo['viol_frames'] = max(0, tinfo.get('viol_frames', 0) - 1)
+
+                # Require at least 3 consecutive confirmed violation frames before logging official violation
+                if tinfo.get('viol_frames', 0) >= 3 and not tinfo['violated']:
                     tinfo['violated'] = True
                     total_violations += 1 # CUMULATIVE COUNTER +1
 
@@ -377,8 +437,8 @@ def run_system(input_source, model_path, conf_thresh, imgsz, save_path=None, sho
                 cv2.putText(frame, f"Co mu {h['conf']:.2f}", (hx1, max(15, hy1 - 4)),
                             cv2.FONT_HERSHEY_DUPLEX, 0.40, (40, 180, 40), 1, cv2.LINE_AA)
 
-            # Draw No-Helmets (Red Alert)
-            for nh in detected_no_helmets:
+            # Draw Confirmed No-Helmets (Red Alert on verified violating rider heads)
+            for nh in verified_no_helmets:
                 nx1, ny1, nx2, ny2 = nh["box"]
                 cv2.rectangle(frame, (nx1, ny1), (nx2, ny2), (0, 0, 240), 3)
                 (tw, th), _ = cv2.getTextSize("KHONG MU", cv2.FONT_HERSHEY_DUPLEX, 0.45, 1)

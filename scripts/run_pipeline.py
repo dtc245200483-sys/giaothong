@@ -36,17 +36,23 @@ def process_image(frame, det, ocr, nm_util, save_dir=None, name="frame"):
         mh = my2 - my1
         x1e, y1e, x2e, y2e = mx1 - 0.1 * mw, my1 - 0.1 * mh, mx2 + 0.1 * mw, my2 + 0.1 * mh
 
+        helmets = []
         no_helmets = []
         plates = []
         for ob in boxes:
-            if int(ob.cls[0]) == 2:  # no_helmet
-                ox, oy = float(ob.xyxy[0][0]), float(ob.xyxy[0][1])
-                if x1e <= ox <= x2e and y1e <= oy <= y2e:
+            cls_id = int(ob.cls[0])
+            ox, oy = float(ob.xyxy[0][0]), float(ob.xyxy[0][1])
+            if x1e <= ox <= x2e and y1e <= oy <= y2e:
+                if cls_id == 1:  # helmet
+                    helmets.append(ob)
+                elif cls_id == 2 and float(ob.conf[0]) >= 0.40:  # no_helmet with confident score
                     no_helmets.append(ob)
-            elif int(ob.cls[0]) == 3:  # license_plate
-                ox, oy = float(ob.xyxy[0][0]), float(ob.xyxy[0][1])
-                if x1e <= ox <= x2e and y1e <= oy <= y2e:
+                elif cls_id == 3:  # license_plate
                     plates.append(ob)
+
+        # Helmet Priority: if helmet is detected on this motorcycle, rider is compliant
+        if helmets:
+            no_helmets = []
 
         plate_text = None
         plate_conf = None
