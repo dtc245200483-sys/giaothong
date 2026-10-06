@@ -4,6 +4,9 @@ __pycache__/
 *.cache
 *.log
 repos/
-runs/*.mp4
-runs/train_video_v4/weights/last.pt
-video/hanoi_bach_mai_traffic.mp4
+runs/
+video/
+videovaanhtrain/
+*.zip
+dataset_v2_train/
+models/*_openvino_model/

@@ -1,9 +1,0 @@
-path: D:/hoclamAI/giaothong/datasets/helmet/raw
-train: images/train
-val: images/val
-
-names:
-  0: moto
-  1: helmet
-  2: no_helmet
-  3: license_plate
