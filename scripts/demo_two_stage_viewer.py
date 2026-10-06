@@ -86,6 +86,61 @@ def box_iou(box1, box2):
     return inter / max(1.0, union)
 
 
+DOSSIER_DIR = os.path.join(ROOT, "runs", "ho_so_vi_pham")
+os.makedirs(DOSSIER_DIR, exist_ok=True)
+
+
+def save_violation_dossier(viol_id, timestamp_str, viol_reason, full_frame, bike_crop, plate_crop, plate_text):
+    """Xuất trọn bộ hồ sơ bằng chứng vi phạm chuẩn hệ thống camera giao thông thực tế:
+    1_toan_canh_vi_pham.jpg, 2_can_canh_nguoi_vi_pham.jpg, 3_can_canh_bien_so_vang.jpg, 4_bien_ban_vi_pham.txt
+    """
+    try:
+        t_clean = str(timestamp_str).replace(":", "-").replace(" ", "_")
+        case_dir = os.path.join(DOSSIER_DIR, f"VP_{viol_id:04d}_{t_clean}")
+        os.makedirs(case_dir, exist_ok=True)
+
+        # 1. Ảnh toàn cảnh vi phạm
+        if full_frame is not None and full_frame.size > 0:
+            cv2.imwrite(os.path.join(case_dir, "1_toan_canh_vi_pham.jpg"), full_frame)
+
+        # 2. Cận cảnh xe và người vi phạm
+        if bike_crop is not None and bike_crop.size > 0:
+            cv2.imwrite(os.path.join(case_dir, "2_can_canh_nguoi_vi_pham.jpg"), bike_crop)
+
+        # 3. Cận cảnh biển số xe (Khung hình vàng nét nhất)
+        if plate_crop is not None and plate_crop.size > 0:
+            ph, pw = plate_crop.shape[:2]
+            zoom_p = cv2.resize(plate_crop, (pw * 3, ph * 3), interpolation=cv2.INTER_CUBIC)
+            cv2.imwrite(os.path.join(case_dir, "3_can_canh_bien_so_vang.jpg"), zoom_p)
+
+        # 4. Biên bản ghi nhận vi phạm
+        is_verified = bool(plate_text and plate_text not in ["CHUA RO BIEN", "CHUA CO", "DANG TRICH XUAT...", "CHO XAC MINH (BIEN MO)"])
+        status_txt = "DA XAC DINH BIEN SO (TU DONG)" if is_verified else "CHO CAN BO XAC MINH THU CONG (HINH ANH KEM THEO)"
+        plate_display = plate_text if is_verified else "CHO XAC MINH (HINH ANH KEM THEO)"
+
+        content = f"""================================================================================
+BIEN BAN GHI NHAN HANH VI VI PHAM GIAO THONG (HE THONG AI 2 TANG)
+================================================================================
+Ma ho so:           #VP-{viol_id:04d}
+Thoi gian ghi nhan: {timestamp_str}
+Hanh vi vi pham:    {viol_reason}
+Bien so nhan dien:  {plate_display}
+Trang thai ho so:   [{status_txt}]
+Dia diem giam sat:  Camera Quan Sat Cau Vuot
+Tep dinh kem:
+  - 1_toan_canh_vi_pham.jpg (Khung hinh toan canh vi pham)
+  - 2_can_canh_nguoi_vi_pham.jpg (Can canh nguoi lai khong doi mu)
+  - 3_can_canh_bien_so_vang.jpg (Khung hinh vang bien so ro nhat phong to)
+================================================================================
+"""
+        with open(os.path.join(case_dir, "4_bien_ban_vi_pham.txt"), "w", encoding="utf-8") as f:
+            f.write(content)
+        return case_dir
+    except Exception as e:
+        print(f"Loi xuat ho so: {e}")
+        return None
+
+
 def main():
     print("=" * 80)
     print("KHỞI ĐỘNG HỆ THỐNG GIÁM SÁT GIAO THÔNG 2 TẦNG (TWO-STAGE YOLO11s)")
@@ -154,31 +209,35 @@ def main():
                 if task is None:
                     break
                 viol_id, plate_img = task
-                p_text = "CHUA RO BIEN"
+                p_text = "CHO XAC MINH (BIEN MO)"
                 if plate_img is not None and plate_img.size > 0:
                     try:
-                        # 1. Ưu tiên mô hình ký tự huấn luyện từ licenseplate_digits (5ms siêu tốc)
-                        if char_recognizer is not None:
-                            pred_p = char_recognizer.recognize_plate(plate_img)
-                            if pred_p and pred_p != "CHUA RO BIEN":
-                                p_text = pred_p
-
-                        # 2. Dự phòng PaddleOCR nếu mô hình ký tự chưa bắt được đủ contour
-                        if p_text == "CHUA RO BIEN" and ocr_engine is not None:
+                        # Cách 1: Mô hình chuỗi dòng (Sequence Recognition) - đọc cả cụm chữ số
+                        seq_text = ""
+                        if ocr_engine is not None:
                             tokens = []
                             res_ocr = ocr_engine.ocr(plate_img, det=True, cls=False)
                             if res_ocr and res_ocr[0]:
                                 tokens = [line[1][0] for line in res_ocr[0] if line[1][1] > 0.25]
-
                             if not tokens:
                                 res_rec = ocr_engine.ocr(plate_img, det=False, cls=False)
                                 if res_rec and res_rec[0]:
                                     tokens = [l[0] for l in res_rec[0] if l[1] > 0.30]
-
                             if tokens:
-                                cleaned = clean_plate_text(" ".join(tokens))
-                                if cleaned:
-                                    p_text = cleaned
+                                seq_text = clean_plate_text(" ".join(tokens))
+
+                        # Cách 2: Mô hình ký tự huấn luyện từ licenseplate_digits (5ms siêu tốc)
+                        char_text = ""
+                        if char_recognizer is not None:
+                            pred_p = char_recognizer.recognize_plate(plate_img)
+                            if pred_p and pred_p != "CHUA RO BIEN":
+                                char_text = pred_p
+
+                        # Chọn kết quả tối ưu
+                        if seq_text and any(c.isdigit() for c in seq_text):
+                            p_text = seq_text
+                        elif char_text:
+                            p_text = char_text
                     except Exception:
                         pass
                 ocr_results[viol_id] = p_text
@@ -531,23 +590,31 @@ def main():
                     if f_py2 > f_py1 and f_px2 > f_px1:
                         plate_crop_local = clean_frame[f_py1:f_py2, f_px1:f_px2]
 
-                # Theo dõi ảnh biển số nét nhất/to nhất khi xe đi dần xuống gần camera
+                # Theo dõi ảnh biển số nét nhất/to nhất (Chiến lược Golden Frame Tracking)
                 if plate_crop_local is not None and plate_crop_local.size > 0:
                     curr_area = plate_crop_local.shape[0] * plate_crop_local.shape[1]
-                    if st.get('best_plate_crop') is None or curr_area > st.get('best_plate_area', 0):
+                    gray_pl = cv2.cvtColor(plate_crop_local, cv2.COLOR_BGR2GRAY)
+                    lap_var = float(cv2.Laplacian(gray_pl, cv2.CV_64F).var())
+                    # Điểm chất lượng: kết hợp diện tích và độ tương phản/sắc nét
+                    quality_score = curr_area * (1.0 + min(2.5, lap_var / 120.0))
+
+                    if st.get('best_plate_crop') is None or quality_score > st.get('best_quality_score', 0):
                         st['best_plate_crop'] = plate_crop_local.copy()
                         st['best_plate_area'] = curr_area
-                        # Cập nhật ngay ảnh biển số nét hơn nếu xe này đang hiển thị vi phạm
+                        st['best_quality_score'] = quality_score
+                        st['best_bike_crop'] = crop_clean.copy() if crop_clean is not None else None
+                        st['best_full_frame'] = frame.copy()
+
+                        # Cập nhật ngay Khung Hình Vàng cho xe đang vi phạm
                         if st.get('recorded', False) and st.get('violation_recorded_id') == latest_viol_id:
                             latest_viol_plate_crop = plate_crop_local.copy()
                             if recent_history and recent_history[0]['id'] == latest_viol_id:
                                 recent_history[0]['img'] = latest_viol_plate_crop.copy()
 
-                            # Chỉ gửi OCR bổ sung nếu ảnh to hơn ít nhất 60% và cách lần trước > 1.2s (tránh spam CPU)
                             now_t = time.time()
-                            if curr_area > st.get('last_ocr_area', 0) * 1.6 and (now_t - st.get('last_ocr_time', 0) > 1.2):
+                            if quality_score > st.get('last_ocr_score', 0) * 1.4 and (now_t - st.get('last_ocr_time', 0) > 1.0):
                                 st['last_ocr_time'] = now_t
-                                st['last_ocr_area'] = curr_area
+                                st['last_ocr_score'] = quality_score
                                 try:
                                     ocr_queue.put_nowait((latest_viol_id, plate_crop_local.copy()))
                                 except queue.Full:
@@ -613,12 +680,13 @@ def main():
                             latest_viol_id += 1
                             st['violation_recorded_id'] = latest_viol_id
                             st['last_ocr_time'] = curr_t
-                            st['last_ocr_area'] = st.get('best_plate_area', 0)
+                            st['last_ocr_score'] = st.get('best_quality_score', 0)
+                            st['viol_time'] = latest_viol_time
 
                             record = {
                                 "id": latest_viol_id,
                                 "time": latest_viol_time,
-                                "plate": "DANG NHAN DIEN...",
+                                "plate": "DANG TRICH XUAT...",
                                 "img": latest_viol_plate_crop.copy() if latest_viol_plate_crop is not None else None
                             }
                             recent_history.insert(0, record)
@@ -630,6 +698,17 @@ def main():
                                     ocr_queue.put_nowait((latest_viol_id, latest_viol_plate_crop.copy()))
                                 except queue.Full:
                                     pass
+
+                            # Tự động xuất ngay bộ hồ sơ bằng chứng vi phạm đầy đủ
+                            save_violation_dossier(
+                                latest_viol_id, latest_viol_time,
+                                st.get('viol_reason', 'KHONG DOI MU BAO HIEM'),
+                                st.get('best_full_frame', frame.copy()),
+                                st.get('best_bike_crop', crop_clean.copy() if crop_clean is not None else None),
+                                latest_viol_plate_crop.copy() if latest_viol_plate_crop is not None else None,
+                                "DANG TRICH XUAT..."
+                            )
+
 
                 elif st['status'] == 'HOP_LE':
                     draw_corner_rect(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
@@ -654,11 +733,23 @@ def main():
                     if iid == latest_viol_id:
                         latest_viol_plate_text = ocr_results[iid]
 
-            # Đồng bộ kết quả biển số vào từng xe đang chạy trên video BÊN TRÁI
+            # Đồng bộ kết quả biển số vào từng xe đang chạy trên video BÊN TRÁI và cập nhật hồ sơ
             for tid_m, st_m in vehicle_memory.items():
                 v_rec_id = st_m.get('violation_recorded_id')
                 if v_rec_id in ocr_results:
                     st_m['plate_text'] = ocr_results[v_rec_id]
+                    if not st_m.get('dossier_saved', False) or st_m.get('last_saved_text') != st_m['plate_text']:
+                        st_m['dossier_saved'] = True
+                        st_m['last_saved_text'] = st_m['plate_text']
+                        save_violation_dossier(
+                            v_rec_id,
+                            st_m.get('viol_time', latest_viol_time),
+                            st_m.get('viol_reason', 'KHONG DOI MU BAO HIEM'),
+                            st_m.get('best_full_frame', frame.copy()),
+                            st_m.get('best_bike_crop'),
+                            st_m.get('best_plate_crop'),
+                            st_m['plate_text']
+                        )
 
             dt = time.time() - t0
             fps = 0.9 * fps + 0.1 * (1.0 / max(0.001, dt)) if fps > 0 else (1.0 / max(0.001, dt))
@@ -734,13 +825,15 @@ def main():
 
             # 3. Banner Dòng Chữ Biển Số & Lỗi
             banner_y = panel_y + 380
-            cv2.rectangle(canvas, (panel_x + 20, banner_y), (panel_x + panel_w - 20, banner_y + 85), (10, 20, 35), -1)
-            cv2.rectangle(canvas, (panel_x + 20, banner_y), (panel_x + panel_w - 20, banner_y + 85), (0, 220, 255), 2)
+            cv2.rectangle(canvas, (panel_x + 20, banner_y), (panel_x + panel_w - 20, banner_y + 88), (10, 20, 35), -1)
+            cv2.rectangle(canvas, (panel_x + 20, banner_y), (panel_x + panel_w - 20, banner_y + 88), (0, 220, 255), 2)
 
             put_text_utf8(canvas, f"BIEN SO:  {latest_viol_plate_text}",
-                          (panel_x + 35, banner_y + 35), 0.85, (0, 255, 255), 2)
+                          (panel_x + 35, banner_y + 32), 0.85, (0, 255, 255), 2)
             put_text_utf8(canvas, f"LOI: KHONG DOI MU BAO HIEM  |  GIO: {latest_viol_time}",
-                          (panel_x + 35, banner_y + 65), 0.50, (100, 200, 255), 1)
+                          (panel_x + 35, banner_y + 58), 0.48, (100, 200, 255), 1)
+            put_text_utf8(canvas, "HO SO: DA LUU TU DONG (runs/ho_so_vi_pham/)",
+                          (panel_x + 35, banner_y + 78), 0.40, (0, 255, 120), 1)
 
             # 4. Bảng Lịch Sử Vi Phạm
             hist_y = panel_y + 480
@@ -787,6 +880,13 @@ def main():
             snap_path = os.path.join(snap_dir, f"bien_ban_vi_pham_{snap_counter:03d}.jpg")
             cv2.imwrite(snap_path, canvas)
             print(f">> [DA LUU BIEN BAN]: {snap_path}")
+            if latest_viol_id > 0:
+                d_path = save_violation_dossier(
+                    latest_viol_id, latest_viol_time, "KHONG DOI MU BAO HIEM",
+                    frame.copy(), latest_viol_bike_crop, latest_viol_plate_crop, latest_viol_plate_text
+                )
+                if d_path:
+                    print(f">> [DA XUAT HO SO BANG CHUNG]: {d_path}")
 
     cap.release()
     cv2.destroyAllWindows()
