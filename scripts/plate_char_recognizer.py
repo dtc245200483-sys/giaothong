@@ -99,62 +99,67 @@ class PlateCharRecognizer:
         if h == 0 or w == 0:
             return "CHUA RO BIEN"
 
-        # 1. Phóng to ảnh nếu quá nhỏ để tách contour chuẩn
-        if h < 80:
-            scale = 100.0 / h
-            target_w = int(round(w * scale))
-            plate_img = cv2.resize(plate_img, (target_w, 100), interpolation=cv2.INTER_CUBIC)
-            h, w = plate_img.shape[:2]
+        # 1. Phóng to ảnh để tách ký tự chuẩn xác
+        scale = 120.0 / h
+        target_w = max(40, int(round(w * scale)))
+        plate_up = cv2.resize(plate_img, (target_w, 120), interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(plate_up, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
 
-        gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+        # 2. Ngưỡng thích ứng (Adaptive Threshold) tách nét chữ đen trên nền biển sáng
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 19, 9)
 
-        # 2. Nhị phân hóa Otsu để tách chữ đen trên nền trắng
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # 3. Tìm đường bao bằng RETR_LIST để lấy các ký tự bên trong biển
+        contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-        # 3. Tìm đường bao các ký tự
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        char_boxes = []
+        char_candidates = []
         for cnt in contours:
             x, y, cw, ch = cv2.boundingRect(cnt)
             aspect = ch / float(cw) if cw > 0 else 0
             # Lọc các contour có kích thước chuẩn của ký tự xe máy
-            if 0.9 < aspect < 5.0 and 15 < ch < h * 0.75 and 4 < cw < w * 0.45:
-                char_boxes.append((x, y, cw, ch))
+            if 1.0 < aspect < 4.0 and 15 < ch < 55 and 5 < cw < 36:
+                if x > 3 and y > 3 and (x + cw) < (w - 3) and (y + ch) < (h - 3):
+                    char_candidates.append((x, y, cw, ch))
 
-        if len(char_boxes) < 3:
+        # Khử các box trùng lặp (Non-Maximum Suppression)
+        keep_boxes = []
+        for b1 in char_candidates:
+            x1, y1, w1, h1 = b1
+            overlap = False
+            for b2 in keep_boxes:
+                x2, y2, w2, h2 = b2
+                xi1, yi1 = max(x1, x2), max(y1, y2)
+                xi2, yi2 = min(x1+w1, x2+w2), min(y1+h1, y2+h2)
+                if xi2 > xi1 and yi2 > yi1:
+                    inter = (xi2 - xi1) * (yi2 - yi1)
+                    if inter / min(w1*h1, w2*h2) > 0.40:
+                        overlap = True
+                        break
+            if not overlap:
+                keep_boxes.append(b1)
+
+        if len(keep_boxes) < 2:
             return "CHUA RO BIEN"
 
-        # 4. Phân chia 2 dòng: Dòng trên (mã tỉnh/seri) và Dòng dưới (số thứ tự)
-        mid_y = h * 0.50
-        row1_boxes = [b for b in char_boxes if (b[1] + b[3] / 2) < mid_y]
-        row2_boxes = [b for b in char_boxes if (b[1] + b[3] / 2) >= mid_y]
+        # 4. Phân chia 2 dòng biển số
+        mid_y = h * 0.48
+        row1_boxes = [b for b in keep_boxes if (b[1] + b[3] / 2) < mid_y]
+        row2_boxes = [b for b in keep_boxes if (b[1] + b[3] / 2) >= mid_y]
 
-        # Sắp xếp từ trái sang phải theo tọa độ x
         row1_boxes.sort(key=lambda b: b[0])
         row2_boxes.sort(key=lambda b: b[0])
 
-        # 5. Nhận diện từng ký tự qua mô hình đã train
-        text_row1 = ""
-        for x, y, cw, ch in row1_boxes:
-            char_crop = gray[y:y+ch, x:x+cw]
-            text_row1 += self.predict_char(char_crop)
-
-        text_row2 = ""
-        for x, y, cw, ch in row2_boxes:
-            char_crop = gray[y:y+ch, x:x+cw]
-            text_row2 += self.predict_char(char_crop)
+        # 5. Nhận diện từng ký tự qua mô hình đã huấn luyện
+        text_row1 = "".join([self.predict_char(gray[y:y+ch, x:x+cw]) for x, y, cw, ch in row1_boxes])
+        text_row2 = "".join([self.predict_char(gray[y:y+ch, x:x+cw]) for x, y, cw, ch in row2_boxes])
 
         # 6. Định dạng chuỗi chuẩn biển số xe máy Việt Nam
         if text_row1 and text_row2:
-            # Ví dụ: 29B1 12345 -> 29-B1 123.45
-            r1 = text_row1
-            if len(r1) >= 4 and r1[2].isalpha():
-                r1 = f"{r1[:2]}-{r1[2:]}"
-            r2 = text_row2
-            if len(r2) == 5:
-                r2 = f"{r2[:3]}.{r2[3:]}"
-            return f"{r1} {r2}"
+            return f"{text_row1} {text_row2}"
+        elif text_row2:
+            return text_row2
+        elif text_row1:
+            return text_row1
         elif text_row2:
             return text_row2
         elif text_row1:
