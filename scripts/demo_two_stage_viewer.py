@@ -320,12 +320,9 @@ def main():
             clean_frame = frame.copy()
             orig_h, orig_w = frame.shape[:2]
 
-            # Vạch kiểm soát giao thông (20% từ đỉnh màn hình)
+            # Ngưỡng ảo lọc xe ở quá xa góc trên ngã tư (20% từ đỉnh màn hình)
             line_red_y = int(orig_h * 0.20)
-            line_yellow_y = int(orig_h * 0.65)
 
-            cv2.line(frame, (0, line_red_y), (orig_w, line_red_y), (0, 0, 255), 2)
-            cv2.line(frame, (0, line_yellow_y), (orig_w, line_yellow_y), (0, 255, 255), 2)
 
             frame_idx += 1
             frame_has_violation = False
