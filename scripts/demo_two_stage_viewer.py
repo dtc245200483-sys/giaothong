@@ -25,6 +25,10 @@ import re
 torch.set_num_threads(8)
 from ultralytics import YOLO
 
+# Nạp module nhận diện ký tự biển số từ model train bằng licenseplate_digits
+sys.path.append(os.path.dirname(__file__))
+from plate_char_recognizer import PlateCharRecognizer
+
 def clean_plate_text(raw_text):
     if not raw_text:
         return ""
@@ -118,7 +122,14 @@ def main():
     snap_dir = os.path.join(ROOT, "runs", "violations_output")
     os.makedirs(snap_dir, exist_ok=True)
 
-    # Khởi tạo OCR tiếng Việt (PaddleOCR)
+    # Khởi tạo mô hình ký tự biển số (huấn luyện từ licenseplate_digits)
+    char_recognizer = None
+    try:
+        char_recognizer = PlateCharRecognizer(os.path.join(ROOT, "models", "lp_char_classifier.pt"))
+    except Exception as e:
+        print(f">> Canh bao PlateCharRecognizer: {e}")
+
+    # Khởi tạo OCR tiếng Việt (PaddleOCR) dự phòng
     ocr_engine = None
     try:
         from paddleocr import PaddleOCR
@@ -128,7 +139,7 @@ def main():
             rec_char_dict_path=os.path.join(ROOT, "repos", "lpr_nmthanh", "model", "ocr", "en_dict.txt"),
             show_log=False, use_angle_cls=False
         )
-        print(">> PaddleOCR tiếng Việt đã sẵn sàng!")
+        print(">> PaddleOCR tiếng Việt dự phòng đã sẵn sàng!")
     except Exception as e:
         print(f">> Cảnh báo PaddleOCR: {e}")
 
@@ -144,30 +155,34 @@ def main():
                     break
                 viol_id, plate_img = task
                 p_text = "CHUA RO BIEN"
-                if ocr_engine is not None and plate_img is not None and plate_img.size > 0:
+                if plate_img is not None and plate_img.size > 0:
                     try:
-                        tokens = []
-                        # Bước 1: Thử phát hiện chữ và nhận diện (det=True) trực tiếp trên ảnh gốc
-                        res_ocr = ocr_engine.ocr(plate_img, det=True, cls=False)
-                        if res_ocr and res_ocr[0]:
-                            tokens = [line[1][0] for line in res_ocr[0] if line[1][1] > 0.25]
+                        # 1. Ưu tiên mô hình ký tự huấn luyện từ licenseplate_digits (5ms siêu tốc)
+                        if char_recognizer is not None:
+                            pred_p = char_recognizer.recognize_plate(plate_img)
+                            if pred_p and pred_p != "CHUA RO BIEN":
+                                p_text = pred_p
 
-                        # Bước 2: Dự phòng nhận diện trực tiếp nếu bước 1 không tìm thấy chữ
-                        if not tokens:
-                            res_rec = ocr_engine.ocr(plate_img, det=False, cls=False)
-                            if res_rec and res_rec[0]:
-                                tokens = [l[0] for l in res_rec[0] if l[1] > 0.30]
+                        # 2. Dự phòng PaddleOCR nếu mô hình ký tự chưa bắt được đủ contour
+                        if p_text == "CHUA RO BIEN" and ocr_engine is not None:
+                            tokens = []
+                            res_ocr = ocr_engine.ocr(plate_img, det=True, cls=False)
+                            if res_ocr and res_ocr[0]:
+                                tokens = [line[1][0] for line in res_ocr[0] if line[1][1] > 0.25]
 
-                        if tokens:
-                            cleaned = clean_plate_text(" ".join(tokens))
-                            if cleaned:
-                                p_text = cleaned
+                            if not tokens:
+                                res_rec = ocr_engine.ocr(plate_img, det=False, cls=False)
+                                if res_rec and res_rec[0]:
+                                    tokens = [l[0] for l in res_rec[0] if l[1] > 0.30]
+
+                            if tokens:
+                                cleaned = clean_plate_text(" ".join(tokens))
+                                if cleaned:
+                                    p_text = cleaned
                     except Exception:
                         pass
                 ocr_results[viol_id] = p_text
                 ocr_queue.task_done()
-            except Exception:
-                pass
             except Exception:
                 pass
 
@@ -548,7 +563,12 @@ def main():
                 # HIEN THI THEO TRANG THAI CUA XE:
                 if st['status'] == 'VI_PHAM':
                     frame_has_violation = True
-                    viol_label = f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}]"
+                    plate_txt = st.get('plate_text', '')
+                    if plate_txt and plate_txt != "CHUA RO BIEN":
+                        viol_label = f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}] - BS: {plate_txt}"
+                    else:
+                        viol_label = f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}]"
+
                     draw_corner_rect(frame, (bx1, by1), (bx2, by2), (0, 0, 255), 2)
                     put_text_utf8(frame, viol_label, (bx1, max(22, by1 - 8)),
                                   0.55, (0, 0, 255), 2)
@@ -564,6 +584,16 @@ def main():
                         nx1_b, ny1_b, nx2_b, ny2_b = nh_box
                         cv2.rectangle(frame, (nx1_b, ny1_b), (nx2_b, ny2_b), (0, 0, 255), 2)
                         put_text_utf8(frame, f"KHONG MU {nh_conf:.2f}", (nx1_b, max(18, ny1_b - 5)), 0.45, (0, 0, 255), 1)
+
+                    # IN BIỂN SỐ XE TRỰC TIẾP LÊN VỊ TRÍ BIỂN SỐ ĐUÔI XE Ở BÊN TRÁI VIDEO
+                    if bike_plates:
+                        for pl_box, pl_conf in bike_plates:
+                            px1_b, py1_b, px2_b, py2_b = pl_box
+                            cv2.rectangle(frame, (px1_b, py1_b), (px2_b, py2_b), (0, 255, 255), 2)
+                            pl_text_disp = f"BS: {plate_txt}" if (plate_txt and plate_txt != "CHUA RO BIEN") else f"BIEN SO {pl_conf:.2f}"
+                            put_text_utf8(frame, pl_text_disp, (px1_b, max(18, py1_b - 5)), 0.48, (0, 255, 255), 2)
+                    elif plate_txt and plate_txt != "CHUA RO BIEN":
+                        put_text_utf8(frame, f"BS: {plate_txt}", (bx1, min(orig_h - 10, by2 + 18)), 0.50, (0, 255, 255), 2)
 
                     # Cap nhat anh xe vi pham len bang ben phai
                     if crop_clean is not None and crop_clean.size > 0:
@@ -616,13 +646,19 @@ def main():
                     put_text_utf8(frame, f"id{tid}: DANG THEO DOI", (bx1, max(22, by1 - 8)),
                                   0.45, (255, 180, 50), 1)
 
-            # Cập nhật kết quả OCR từ luồng nền
+            # Cập nhật kết quả OCR từ luồng nền vào lịch sử và bảng bên phải
             for item in recent_history:
                 iid = item["id"]
                 if iid in ocr_results:
                     item["plate"] = ocr_results[iid]
                     if iid == latest_viol_id:
                         latest_viol_plate_text = ocr_results[iid]
+
+            # Đồng bộ kết quả biển số vào từng xe đang chạy trên video BÊN TRÁI
+            for tid_m, st_m in vehicle_memory.items():
+                v_rec_id = st_m.get('violation_recorded_id')
+                if v_rec_id in ocr_results:
+                    st_m['plate_text'] = ocr_results[v_rec_id]
 
             dt = time.time() - t0
             fps = 0.9 * fps + 0.1 * (1.0 / max(0.001, dt)) if fps > 0 else (1.0 / max(0.001, dt))
