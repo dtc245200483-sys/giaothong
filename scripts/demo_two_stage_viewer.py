@@ -19,14 +19,18 @@ import threading
 import cv2
 import numpy as np
 import torch
+import re
 
 # Tối ưu hóa toàn bộ 8 nhân của CPU AMD Ryzen 7 7840HS
 torch.set_num_threads(8)
 from ultralytics import YOLO
 
-# Nạp module làm nét biển số
-sys.path.append(os.path.dirname(__file__))
-from plate_enhancer import PlateEnhancer
+def clean_plate_text(raw_text):
+    if not raw_text:
+        return ""
+    cleaned = re.sub(r'[^A-Z0-9\-\.\s]', '', raw_text.upper().strip())
+    has_digit = any(c.isdigit() for c in cleaned)
+    return cleaned if (has_digit and len(cleaned) >= 4) else ""
 
 # Đảm bảo UTF-8 trên Windows console
 if sys.stdout.encoding != 'utf-8':
@@ -114,8 +118,6 @@ def main():
     snap_dir = os.path.join(ROOT, "runs", "violations_output")
     os.makedirs(snap_dir, exist_ok=True)
 
-    enhancer = PlateEnhancer(target_height=160)
-
     # Khởi tạo OCR tiếng Việt (PaddleOCR)
     ocr_engine = None
     try:
@@ -145,11 +147,11 @@ def main():
                 if ocr_engine is not None and plate_img is not None and plate_img.size > 0:
                     try:
                         tokens = []
-                        # Bước 1: Thử phát hiện chữ và nhận diện (det=True)
+                        # Bước 1: Thử phát hiện chữ và nhận diện (det=True) trực tiếp trên ảnh gốc
                         res_ocr = ocr_engine.ocr(plate_img, det=True, cls=False)
                         if res_ocr and res_ocr[0]:
                             tokens = [line[1][0] for line in res_ocr[0] if line[1][1] > 0.25]
-                        
+
                         # Bước 2: Dự phòng nhận diện trực tiếp nếu bước 1 không tìm thấy chữ
                         if not tokens:
                             res_rec = ocr_engine.ocr(plate_img, det=False, cls=False)
@@ -157,13 +159,15 @@ def main():
                                 tokens = [l[0] for l in res_rec[0] if l[1] > 0.30]
 
                         if tokens:
-                            cleaned = enhancer.clean_plate_text(" ".join(tokens))
+                            cleaned = clean_plate_text(" ".join(tokens))
                             if cleaned:
                                 p_text = cleaned
                     except Exception:
                         pass
                 ocr_results[viol_id] = p_text
                 ocr_queue.task_done()
+            except Exception:
+                pass
             except Exception:
                 pass
 
@@ -520,14 +524,19 @@ def main():
                         st['best_plate_area'] = curr_area
                         # Cập nhật ngay ảnh biển số nét hơn nếu xe này đang hiển thị vi phạm
                         if st.get('recorded', False) and st.get('violation_recorded_id') == latest_viol_id:
-                            enhanced_p = enhancer.enhance(plate_crop_local)
-                            latest_viol_plate_crop = enhanced_p.copy()
+                            latest_viol_plate_crop = plate_crop_local.copy()
                             if recent_history and recent_history[0]['id'] == latest_viol_id:
                                 recent_history[0]['img'] = latest_viol_plate_crop.copy()
-                            try:
-                                ocr_queue.put_nowait((latest_viol_id, latest_viol_plate_crop.copy()))
-                            except queue.Full:
-                                pass
+
+                            # Chỉ gửi OCR bổ sung nếu ảnh to hơn ít nhất 60% và cách lần trước > 1.2s (tránh spam CPU)
+                            now_t = time.time()
+                            if curr_area > st.get('last_ocr_area', 0) * 1.6 and (now_t - st.get('last_ocr_time', 0) > 1.2):
+                                st['last_ocr_time'] = now_t
+                                st['last_ocr_area'] = curr_area
+                                try:
+                                    ocr_queue.put_nowait((latest_viol_id, plate_crop_local.copy()))
+                                except queue.Full:
+                                    pass
 
                 # Cat anh xe sach tu clean_frame
                 crop_cy1 = max(0, by1 - int(0.20 * bh))
@@ -563,8 +572,7 @@ def main():
 
                         plate_to_use = st.get('best_plate_crop', plate_crop_local)
                         if plate_to_use is not None and plate_to_use.size > 0:
-                            enhanced_p = enhancer.enhance(plate_to_use)
-                            latest_viol_plate_crop = enhanced_p.copy()
+                            latest_viol_plate_crop = plate_to_use.copy()
                         else:
                             latest_viol_plate_crop = None
 
@@ -574,6 +582,8 @@ def main():
                             last_recorded_viol_time = curr_t
                             latest_viol_id += 1
                             st['violation_recorded_id'] = latest_viol_id
+                            st['last_ocr_time'] = curr_t
+                            st['last_ocr_area'] = st.get('best_plate_area', 0)
 
                             record = {
                                 "id": latest_viol_id,

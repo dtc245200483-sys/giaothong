@@ -15,11 +15,8 @@ import sys
 import time
 import cv2
 import numpy as np
+import re
 from ultralytics import YOLO
-
-# Import plate enhancer
-sys.path.append(os.path.dirname(__file__))
-from plate_enhancer import PlateEnhancer
 
 
 def run_two_stage(
@@ -51,8 +48,6 @@ def run_two_stage(
     else:
         print(f"Nạp Model Tầng 2 (Mũ & Biển số): {model_helmet_lp_path}")
         model_sub = YOLO(model_helmet_lp_path)
-
-    enhancer = PlateEnhancer(target_height=140)
 
     # Initialize OCR
     ocr_engine = None
@@ -151,15 +146,13 @@ def run_two_stage(
             for px1, py1, px2, py2 in plates:
                 plate_crop = frame[max(0, py1-2):min(h, py2+2), max(0, px1-2):min(w, px2+2)]
                 if plate_crop.size > 0 and ocr_engine is not None:
-                    enhanced_plate = enhancer.enhance(plate_crop)
                     try:
-                        ocr_res = ocr_engine.ocr(enhanced_plate, cls=False)
+                        ocr_res = ocr_engine.ocr(plate_crop, cls=False)
                         if ocr_res and ocr_res[0]:
                             tokens = [line[1][0] for line in ocr_res[0] if line[1][1] > 0.40]
                             if tokens:
-                                cleaned_plate = enhancer.clean_plate_text(" ".join(tokens))
-                                if cleaned_plate:
-                                    print(f"[Frame {frame_count}] Xe #{idx+1} Biển số: {cleaned_plate}")
+                                cleaned_plate = " ".join(tokens)
+                                print(f"[Frame {frame_count}] Xe #{idx+1} Biển số: {cleaned_plate}")
                     except Exception:
                         pass
 
