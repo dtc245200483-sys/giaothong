@@ -627,15 +627,27 @@ def main():
                 # HIEN THI THEO TRANG THAI CUA XE:
                 if st['status'] == 'VI_PHAM':
                     frame_has_violation = True
-                    plate_txt = st.get('plate_text', '')
-                    if plate_txt and plate_txt != "CHUA RO BIEN":
-                        viol_label = f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}] - BS: {plate_txt}"
-                    else:
-                        viol_label = f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}]"
-
                     draw_corner_rect(frame, (bx1, by1), (bx2, by2), (0, 0, 255), 2)
-                    put_text_utf8(frame, viol_label, (bx1, max(22, by1 - 8)),
-                                  0.55, (0, 0, 255), 2)
+                    plate_txt = st.get('plate_text', '')
+
+                    if plate_txt and plate_txt != "CHUA RO BIEN":
+                        # Badge 2 tầng: Báo lỗi vi phạm + In biển số xe vàng sáng nổi bật
+                        badge_h = 44
+                        badge_w = max(280, int(len(plate_txt) * 16) + 120)
+                        badge_y1 = max(5, by1 - badge_h - 4)
+                        cv2.rectangle(frame, (bx1, badge_y1), (bx1 + badge_w, badge_y1 + badge_h), (12, 16, 24), -1)
+                        cv2.rectangle(frame, (bx1, badge_y1), (bx1 + badge_w, badge_y1 + badge_h), (0, 0, 255), 2)
+                        put_text_utf8(frame, f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}]",
+                                      (bx1 + 8, badge_y1 + 18), 0.50, (0, 140, 255), 2)
+                        put_text_utf8(frame, f"BIEN SO: {plate_txt}",
+                                      (bx1 + 8, badge_y1 + 38), 0.58, (0, 255, 255), 2)
+                    else:
+                        badge_h = 24
+                        badge_y1 = max(5, by1 - badge_h - 4)
+                        cv2.rectangle(frame, (bx1, badge_y1), (bx1 + 240, badge_y1 + badge_h), (12, 16, 24), -1)
+                        cv2.rectangle(frame, (bx1, badge_y1), (bx1 + 240, badge_y1 + badge_h), (0, 0, 255), 1)
+                        put_text_utf8(frame, f"id{tid}: VI PHAM [{st.get('viol_reason', 'KHONG DOI MU')}]",
+                                      (bx1 + 8, badge_y1 + 17), 0.50, (0, 0, 255), 2)
 
                     # Ve box mu xanh la neu co nguoi doi mu (xe cho 2 nguoi)
                     for hm_box, hm_conf in valid_bike_helmets:

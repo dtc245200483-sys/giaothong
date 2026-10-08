@@ -91,7 +91,7 @@ class PlateCharRecognizer:
         return self.class_list[idx]
 
     def recognize_plate(self, plate_img):
-        """Tách và nhận diện chuỗi biển số từ ảnh crop biển số xe máy."""
+        """Tách và nhận diện chuỗi biển số từ ảnh crop biển số xe máy (Hỗ trợ định dạng chuẩn VN)."""
         if plate_img is None or plate_img.size == 0:
             return "CHUA RO BIEN"
 
@@ -99,40 +99,49 @@ class PlateCharRecognizer:
         if h == 0 or w == 0:
             return "CHUA RO BIEN"
 
-        # 1. Phóng to ảnh để tách ký tự chuẩn xác
-        scale = 120.0 / h
-        target_w = max(40, int(round(w * scale)))
-        plate_up = cv2.resize(plate_img, (target_w, 120), interpolation=cv2.INTER_CUBIC)
+        # 1. Phóng to ảnh để phân tách ký tự chuẩn xác
+        scale = 130.0 / h
+        target_w = max(50, int(round(w * scale)))
+        plate_up = cv2.resize(plate_img, (target_w, 130), interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(plate_up, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
+        h_up, w_up = gray.shape
 
-        # 2. Ngưỡng thích ứng (Adaptive Threshold) tách nét chữ đen trên nền biển sáng
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 19, 9)
+        # 2. Tăng cường độ tương phản cục bộ (CLAHE) để chữ số đen nổi bật rõ trên nền biển
+        clahe = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8))
+        cl = clahe.apply(gray)
 
-        # 3. Tìm đường bao bằng RETR_LIST để lấy các ký tự bên trong biển
+        # 3. Phân ngưỡng thích ứng
+        thresh = cv2.adaptiveThreshold(cl, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 19, 9)
         contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
         char_candidates = []
         for cnt in contours:
             x, y, cw, ch = cv2.boundingRect(cnt)
             aspect = ch / float(cw) if cw > 0 else 0
-            # Lọc các contour có kích thước chuẩn của ký tự xe máy
-            if 1.0 < aspect < 4.0 and 15 < ch < 55 and 5 < cw < 36:
-                if x > 3 and y > 3 and (x + cw) < (w - 3) and (y + ch) < (h - 3):
+            area = cw * ch
+            # Lọc kích thước chuẩn của ký tự trên biển số
+            if 0.9 < aspect < 4.5 and 14 < ch < 65 and 5 < cw < 45 and area > 100:
+                if x > 2 and y > 2 and (x + cw) < (w_up - 2) and (y + ch) < (h_up - 2):
                     char_candidates.append((x, y, cw, ch))
 
-        # Khử các box trùng lặp (Non-Maximum Suppression)
+        # Khử các box lồng nhau (inner holes của số 0, 8, 9, B, D) và khử trùng lặp (NMS)
+        char_candidates.sort(key=lambda b: b[2] * b[3], reverse=True)
         keep_boxes = []
         for b1 in char_candidates:
             x1, y1, w1, h1 = b1
             overlap = False
             for b2 in keep_boxes:
                 x2, y2, w2, h2 = b2
+                # Kiểm tra b1 có nằm lọt trong b2 không
+                if x1 >= x2 - 2 and y1 >= y2 - 2 and (x1 + w1) <= (x2 + w2 + 2) and (y1 + h1) <= (y2 + h2 + 2):
+                    overlap = True
+                    break
+                # Kiểm tra IoU
                 xi1, yi1 = max(x1, x2), max(y1, y2)
-                xi2, yi2 = min(x1+w1, x2+w2), min(y1+h1, y2+h2)
+                xi2, yi2 = min(x1 + w1, x2 + w2), min(y1 + h1, y2 + h2)
                 if xi2 > xi1 and yi2 > yi1:
                     inter = (xi2 - xi1) * (yi2 - yi1)
-                    if inter / min(w1*h1, w2*h2) > 0.40:
+                    if inter / min(w1 * h1, w2 * h2) > 0.35:
                         overlap = True
                         break
             if not overlap:
@@ -142,27 +151,39 @@ class PlateCharRecognizer:
             return "CHUA RO BIEN"
 
         # 4. Phân chia 2 dòng biển số
-        mid_y = h * 0.48
-        row1_boxes = [b for b in keep_boxes if (b[1] + b[3] / 2) < mid_y]
-        row2_boxes = [b for b in keep_boxes if (b[1] + b[3] / 2) >= mid_y]
+        mid_y = h_up * 0.48
+        r1 = sorted([b for b in keep_boxes if (b[1] + b[3] / 2) < mid_y], key=lambda b: b[0])
+        r2 = sorted([b for b in keep_boxes if (b[1] + b[3] / 2) >= mid_y], key=lambda b: b[0])
 
-        row1_boxes.sort(key=lambda b: b[0])
-        row2_boxes.sort(key=lambda b: b[0])
+        # 5. Dự đoán ký tự qua mô hình CNN
+        t1 = "".join([self.predict_char(cl[y:y+ch, x:x+cw]) for x, y, cw, ch in r1])
+        t2 = "".join([self.predict_char(cl[y:y+ch, x:x+cw]) for x, y, cw, ch in r2])
 
-        # 5. Nhận diện từng ký tự qua mô hình đã huấn luyện
-        text_row1 = "".join([self.predict_char(gray[y:y+ch, x:x+cw]) for x, y, cw, ch in row1_boxes])
-        text_row2 = "".join([self.predict_char(gray[y:y+ch, x:x+cw]) for x, y, cw, ch in row2_boxes])
+        # 6. Sửa lỗi dựa trên quy chuẩn biển số xe máy Việt Nam (Domain rules)
+        L2D = {'D': '0', 'O': '0', 'Q': '0', 'I': '1', 'L': '1', 'Z': '2', 'E': '3', 'A': '4', 'S': '5', 'G': '6', 'T': '7', 'B': '8', 'P': '9'}
+        D2L = {'0': 'D', '1': 'L', '2': 'Z', '3': 'E', '4': 'A', '5': 'S', '6': 'G', '7': 'T', '8': 'B', '9': 'P'}
 
-        # 6. Định dạng chuỗi chuẩn biển số xe máy Việt Nam
-        if text_row1 and text_row2:
-            return f"{text_row1} {text_row2}"
-        elif text_row2:
-            return text_row2
-        elif text_row1:
-            return text_row1
-        elif text_row2:
-            return text_row2
-        elif text_row1:
-            return text_row1
+        cr1 = list(t1)
+        if len(cr1) >= 1 and cr1[0] in L2D: cr1[0] = L2D[cr1[0]]
+        if len(cr1) >= 2 and cr1[1] in L2D: cr1[1] = L2D[cr1[1]]
+        if len(cr1) >= 3 and cr1[2] in D2L: cr1[2] = D2L[cr1[2]]
+        if len(cr1) >= 4 and cr1[3] in L2D: cr1[3] = L2D[cr1[3]]
 
-        return "CHUA RO BIEN"
+        cr2 = [L2D.get(c, c) for c in t2]
+
+        if len(cr1) >= 3:
+            sub = "".join(cr1[2:])
+            out1 = f"{cr1[0]}{cr1[1]}-{sub}"
+        else:
+            out1 = "".join(cr1)
+
+        if len(cr2) == 5:
+            out2 = f"{cr2[0]}{cr2[1]}{cr2[2]}.{cr2[3]}{cr2[4]}"
+        elif len(cr2) == 4:
+            out2 = f"{cr2[0]}{cr2[1]}.{cr2[2]}{cr2[3]}"
+        else:
+            out2 = "".join(cr2)
+
+        res = f"{out1} {out2}".strip()
+        return res if len(res) >= 4 else "CHUA RO BIEN"
+

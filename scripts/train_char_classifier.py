@@ -78,28 +78,63 @@ class LPCharCNN(nn.Module):
         return self.classifier(x)
 
 
+from PIL import Image, ImageDraw, ImageFont
+
+# Danh sách font chữ đậm chuẩn biển số Việt Nam
+TTF_FONTS = []
+for font_file in ["arialbd.ttf", "tahomabd.ttf", "segoeuib.ttf", "calibrib.ttf"]:
+    fp = os.path.join(r"C:\Windows\Fonts", font_file)
+    if os.path.exists(fp):
+        TTF_FONTS.append(fp)
+
+
 def generate_synthetic_char(char, img_h=32, img_w=32):
-    """Tự động sinh ảnh ký tự 32x32 mô phỏng font biển số xe máy Việt Nam."""
-    bg_color = random.randint(210, 255)
-    img = np.full((img_h, img_w), bg_color, dtype=np.uint8)
+    """Tự động sinh ảnh ký tự 32x32 nét đậm mô phỏng font biển số xe máy Việt Nam."""
+    bg_val = random.randint(200, 250)
+    img_pil = Image.new("L", (img_w, img_h), color=bg_val)
+    draw = ImageDraw.Draw(img_pil)
 
-    fonts = [cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX]
-    font = random.choice(fonts)
-    scale = random.uniform(0.65, 0.85)
-    thickness = random.randint(1, 2)
+    if TTF_FONTS:
+        font_path = random.choice(TTF_FONTS)
+        font_size = random.randint(20, 24)
+        try:
+            pil_font = ImageFont.truetype(font_path, font_size)
+            # Lấy bounding box để căn giữa hoàn hảo
+            bbox = draw.textbbox((0, 0), char, font=pil_font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            tx = max(1, (img_w - tw) // 2 + random.randint(-1, 1))
+            ty = max(1, (img_h - th) // 2 + random.randint(-1, 1))
+            text_val = random.randint(10, 45)
+            draw.text((tx, ty), char, fill=text_val, font=pil_font)
+            arr = np.array(img_pil)
+        except Exception:
+            arr = np.full((img_h, img_w), bg_val, dtype=np.uint8)
+            cv2.putText(arr, char, (6, 25), cv2.FONT_HERSHEY_DUPLEX, 0.8, random.randint(10, 45), 2)
+    else:
+        arr = np.full((img_h, img_w), bg_val, dtype=np.uint8)
+        cv2.putText(arr, char, (6, 25), cv2.FONT_HERSHEY_DUPLEX, 0.8, random.randint(10, 45), 2)
 
-    (tw, th), baseline = cv2.getTextSize(char, font, scale, thickness)
-    x = max(1, (img_w - tw) // 2 + random.randint(-1, 1))
-    y = min(img_h - 4, (img_h + th) // 2 + random.randint(-1, 1))
+    # 1. Biến thiên độ dày nét (Dilation / Erosion)
+    if random.random() < 0.35:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        arr = cv2.erode(arr, kernel, iterations=1)  # Nét chữ đen dày hơn
+    elif random.random() < 0.25:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        arr = cv2.dilate(arr, kernel, iterations=1)  # Nét chữ thanh hơn
 
-    text_color = random.randint(0, 40)
-    cv2.putText(img, char, (x, y), font, scale, text_color, thickness, cv2.LINE_AA)
-
-    # Thêm biến thể xoay nhẹ
-    angle = random.uniform(-6.0, 6.0)
+    # 2. Xoay và nghiêng nhẹ (-7 đến +7 độ)
+    angle = random.uniform(-7.0, 7.0)
     M = cv2.getRotationMatrix2D((img_w // 2, img_h // 2), angle, 1.0)
-    img = cv2.warpAffine(img, M, (img_w, img_h), borderValue=bg_color)
-    return img
+    arr = cv2.warpAffine(arr, M, (img_w, img_h), borderValue=bg_val)
+
+    # 3. Nhiễu hạt nhẹ mô phỏng bụi đường
+    if random.random() < 0.3:
+        noise = np.random.normal(0, random.uniform(3, 8), arr.shape).astype(np.float32)
+        arr = np.clip(arr.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+    return arr
+
 
 
 def main():
@@ -140,7 +175,7 @@ def main():
 
     # 2. Sinh bổ sung các ký tự còn thiếu (đặc biệt số 3..9 và chữ T..Z)
     syn_count = 0
-    TARGET_PER_CLASS = 500
+    TARGET_PER_CLASS = 700
     for char in CLASS_LIST:
         cur = class_counts[char]
         needed = max(0, TARGET_PER_CLASS - cur)
@@ -176,9 +211,9 @@ def main():
     model = LPCharCNN(num_classes=len(CLASS_LIST))
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=0.002, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=8)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
-    epochs = 8
+    epochs = 10
     print(f"\n>> Bắt đầu huấn luyện {epochs} Epochs trên RAM...", flush=True)
     t_start = time.time()
 

@@ -9,4 +9,6 @@ video/
 videovaanhtrain/
 *.zip
 dataset_v2_train/
+dataset_v3_street/
 models/*_openvino_model/
+
