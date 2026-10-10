@@ -646,18 +646,8 @@ def draw_right_panel(canvas, panel_x, panel_w, canvas_h, total_violations, vname
         card_y += card_h + 6
 
 def main():
-    print("======================================================================")
-    print("   HỆ THỐNG GIÁM SÁT GIAO THÔNG THÔNG MINH (PHIÊN BẢN v4.8 TỐC ĐỘ CAO)")
-    print(f"   Mô hình hoạt động: {os.path.basename(MODEL_PATH)}")
-    print("======================================================================")
-    print("[Tính năng v4.8]:")
-    print("  * Tăng tốc FPS gấp 3.5 lần (~20-25 FPS mượt mà) nhờ Smart Frame-Stride Inference")
-    print("  * Chỉ hiển thị biển số sau khi camera thực sự đã quay tới và chụp được biển số xe")
-    print("  * Triệt tiêu 100% mâu thuẫn xe đỏ nhưng đầu xanh (đồng bộ tuyệt đối 1-1)")
-    print("  * Nhận diện chuẩn xác người trùm áo chống nắng, áo hoodie không có mũ cứng")
-    print("======================================================================\n")
-
-    print(f">> Nạp mô hình AI: {MODEL_PATH}...")
+    print(f">> Mô hình hoạt động: {os.path.basename(MODEL_PATH)}")
+    print(f">> Đang nạp mô hình AI: {MODEL_PATH}...")
     model = YOLO(MODEL_PATH)
     # Warm-up trước mô hình OpenVINO để khung hình đầu tiên không bị khựng
     try:
@@ -1182,16 +1172,6 @@ def main():
             elif key in (ord('p'), ord('P')):
                 vid_idx = (vid_idx - 1) % len(videos)
                 break
-            elif key == ord(']'):
-                target_fps = min(60, target_fps + 5)
-                print(f">> Tăng tốc độ: {target_fps} FPS")
-            elif key == ord('['):
-                target_fps = max(5, target_fps - 5)
-                print(f">> Giảm tốc độ: {target_fps} FPS")
-            elif key in (ord('s'), ord('S')):
-                snap_path = os.path.join(RUNS_DIR, f"snap_manual_f{frame_count}.jpg")
-                cv2.imwrite(snap_path, canvas)
-                print(f">> [ĐÃ LƯU] Ảnh chụp màn hình tại: {snap_path}")
 
         cap.release()
 
