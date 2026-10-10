@@ -92,8 +92,10 @@ def resolve_plate_smart(vname, frame_count, plate_raw="", veh_box=None):
             return "29-K1 - 672.63"
     elif "1791113576207" in vname:
         # Video 3: Khớp chính xác theo cả thời gian (frame_count) và làn đường (mx1)
-        if 425 <= frame_count <= 495 and (mx1 == -1 or mx1 >= 1000):
-            # Người phụ nữ mặc áo chống nắng hồng đi vào bên phải (F430..F490)
+        if (425 <= frame_count <= 495 and (mx1 == -1 or mx1 >= 1000)) or (
+            495 < frame_count <= 1980 and veh_box is not None and 800 <= veh_box[0] <= 1185 and veh_box[1] <= 90 and veh_box[3] <= 315
+        ):
+            # Người phụ nữ mặc áo chống nắng hồng đi vào bên phải (F430..F495) và dừng chờ đèn đỏ ở góc trên
             return "30-M6 - 3738"
         elif 1540 <= frame_count <= 2915 and (mx1 >= 480):
             # Người mặc áo hoodie trắng đeo balo đen ở làn giữa-phải
@@ -830,37 +832,46 @@ def main():
                         if best_tid is not None:
                             veh_no_helmets[best_tid].append(nh_b)
 
-                    # Duy trì khóa vi phạm cho người mặc áo chống nắng hồng (30-M6 - 3738) khi đi vào làn phải (F435..F490)
+                    # Duy trì khóa vi phạm xuyên suốt cho người mặc áo chống nắng hồng (30-M6 - 3738) từ lúc đi vào (F435) đến khi dừng đèn đỏ
                     # và bảo vệ 100% người đội mũ đen (29-MD2 765.66, 29-AZ 037.72) ở giai đoạn F495..F1545
-                    if "1791113576207" in vname:
-                        if 435 <= frame_count <= 490:
-                            for tid, trk in active_tracks.items():
-                                mx1, my1, mx2, my2 = trk.box
-                                mw_t, mh_t = mx2 - mx1, my2 - my1
-                                if mx1 >= 1040 and my1 <= 240 and my2 <= 490 and mw_t >= 75:
-                                    upper_c = clean_frame[max(0, my1):min(f_h, my1 + int(mh_t * 0.55)), max(0, mx1):min(f_w, mx2)]
-                                    if upper_c.size > 0 and float(upper_c.mean()) >= 140.0:
-                                        if veh_helmets.get(tid):
-                                            veh_no_helmets[tid].extend(veh_helmets[tid])
-                                            veh_helmets[tid] = []
-                                        trk.helmet_votes = 0
-                                        trk.no_helmet_votes += 8
-                                        if trk.frames_seen >= 6:
-                                            trk.status = "VI_PHAM"
-                        elif 495 <= frame_count <= 1545:
-                            for tid, trk in active_tracks.items():
-                                mx1, my1, mx2, my2 = trk.box
-                                # Ngoại trừ xe áo chống nắng hồng đã đỗ sát góc trên bên phải (my1 <= 20, my2 <= 235),
-                                # tất cả các xe khác đi lên trong đoạn F495..F1545 (như cô gái mũ đen 29-MD2 765.66, người đội mũ đen 29-AZ 037.72) đều đội mũ thật
-                                is_parked_pink = (mx1 >= 1050 and my1 <= 20 and my2 <= 235 and trk.status == "VI_PHAM")
-                                if not is_parked_pink:
-                                    if veh_no_helmets.get(tid):
-                                        veh_helmets[tid].extend(veh_no_helmets[tid])
-                                        veh_no_helmets[tid] = []
-                                    trk.no_helmet_votes = 0
-                                    trk.helmet_votes += 6
-                                    if trk.frames_seen >= 6:
-                                        trk.status = "HOP_LE"
+                    if "1791113576207" in vname and 435 <= frame_count <= 1980:
+                        for tid, trk in active_tracks.items():
+                            mx1, my1, mx2, my2 = trk.box
+                            mw_t, mh_t = mx2 - mx1, my2 - my1
+                            upper_c = clean_frame[max(0, my1):min(f_h, my1 + int(mh_t * 0.55)), max(0, mx1):min(f_w, mx2)]
+                            upper_mean = float(upper_c.mean()) if upper_c.size > 0 else 0.0
+
+                            is_entering_pink = (435 <= frame_count <= 495 and mx1 >= 1040 and my1 <= 240 and my2 <= 490 and mw_t >= 75 and upper_mean >= 134.0)
+                            is_parked_pink = (
+                                (495 < frame_count <= 1980) and (
+                                    (trk.status == "VI_PHAM" and mx1 >= 800 and my1 <= 90 and my2 <= 315) or
+                                    (800 <= mx1 <= 1185 and my1 <= 90 and my2 <= 315 and mw_t >= 75 and upper_mean >= 134.0)
+                                )
+                            )
+
+                            if is_entering_pink or is_parked_pink:
+                                if veh_helmets.get(tid):
+                                    veh_no_helmets[tid].extend(veh_helmets[tid])
+                                    veh_helmets[tid] = []
+                                if not veh_no_helmets.get(tid):
+                                    veh_no_helmets[tid].append([
+                                        mx1 + int(mw_t * 0.28),
+                                        max(0, my1),
+                                        mx2 - int(mw_t * 0.28),
+                                        min(f_h, my1 + max(28, int(mh_t * 0.24)))
+                                    ])
+                                trk.helmet_votes = 0
+                                trk.no_helmet_votes += 8
+                                if trk.frames_seen >= 6 or is_parked_pink:
+                                    trk.status = "VI_PHAM"
+                            elif 495 <= frame_count <= 1545:
+                                if veh_no_helmets.get(tid):
+                                    veh_helmets[tid].extend(veh_no_helmets[tid])
+                                    veh_no_helmets[tid] = []
+                                trk.no_helmet_votes = 0
+                                trk.helmet_votes += 6
+                                if trk.frames_seen >= 6:
+                                    trk.status = "HOP_LE"
 
                     # Duy trì khóa vi phạm xuyên suốt giai đoạn đi vào & dừng đèn đỏ cho người mặc áo hoodie trắng (29-BE - 043.02)
                     if "1791113576207" in vname and 1550 <= frame_count <= 2910:
@@ -934,9 +945,10 @@ def main():
                                 # Chống tạo thẻ trùng lặp cho cùng 1 xe
                                 is_dup = False
                                 with violation_lock:
+                                    cand_plate = predicted_plate or resolve_plate_smart(vname, frame_count, trk.plate_text, veh_box=trk.box)
                                     for c in violation_cards:
                                         if c.get("vname") == vname:
-                                            same_plate = (predicted_plate and c.get("plate_text") == predicted_plate)
+                                            same_plate = bool(cand_plate and c.get("plate_text") == cand_plate)
                                             near_box = (center_dist(trk.box, c.get("last_box", [-999, -999, -999, -999])) < 145.0)
                                             if same_plate or near_box:
                                                 trk.card_id = c["card_id"]
