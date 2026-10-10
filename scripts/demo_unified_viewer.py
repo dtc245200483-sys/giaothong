@@ -669,7 +669,10 @@ def main():
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, 1640, 720)
 
-    videos = sorted(glob.glob(os.path.join(VIDEO_DIR, "*.mp4")))
+    videos = sorted(
+        glob.glob(os.path.join(VIDEO_DIR, "*.mp4")),
+        key=lambda p: (0 if "1791113576207" in os.path.basename(p) else 1, os.path.basename(p))
+    )
     if not videos:
         print(f"Lỗi: Không tìm thấy video nào trong {VIDEO_DIR}!")
         return
