@@ -22,7 +22,7 @@ from ultralytics import YOLO
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-ROOT = r"D:\hoclamAI\giaothong"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VIDEO_DIR = os.path.join(ROOT, "video")
 RUNS_DIR = os.path.join(ROOT, "runs")
 VIOLATION_DIR = os.path.join(RUNS_DIR, "violation_evidence")

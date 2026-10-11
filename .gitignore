@@ -4,11 +4,9 @@ __pycache__/
 *.cache
 *.log
 repos/
-runs/
-video/
 videovaanhtrain/
 *.zip
 dataset_v2_train/
 dataset_v3_street/
 models/*_openvino_model/
-
+!models/yolo11s_unified_openvino_model/

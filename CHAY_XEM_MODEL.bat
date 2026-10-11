@@ -15,8 +15,16 @@ echo   - Phim N / P: Chuyen video tiep theo / Quay lai video truoc
 echo   - Phim Q hoac Esc: Thoat
 echo.
 echo Dang khoi dong giao dien...
-cd /d "D:\hoclamAI\giaothong"
-call .venv\Scripts\activate.bat
+cd /d "%~dp0"
+if not exist ".venv\Scripts\activate.bat" (
+    echo Dang cai dat moi truong Python lan dau, vui long doi 1-2 phut...
+    python -m venv .venv
+    call .venv\Scripts\activate.bat
+    pip install --upgrade pip
+    pip install ultralytics opencv-python rapidocr-onnxruntime openvino
+) else (
+    call .venv\Scripts\activate.bat
+)
 python scripts\demo_unified_viewer.py
 if %errorlevel% neq 0 (
     echo.
